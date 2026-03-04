@@ -1,0 +1,7 @@
+{
+  "name": "claude-bug-tracker",
+  "description": "Track bug fix regressions, identify fragile code areas, and enforce fix(scope) commit conventions",
+  "author": {
+    "name": "schylerchase"
+  }
+}
