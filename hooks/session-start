@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# SessionStart hook for claude-bug-tracker plugin
+# Scans git history for fix commits, updates bugs.md, outputs summary
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Only run in git repos
+if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    exit 0
+fi
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+BUGS_MD="${PROJECT_ROOT}/bugs.md"
+
+# Run the scan script to get fragile areas
+fragile_output=$("${PLUGIN_ROOT}/scripts/scan-commits.sh" 2>/dev/null || echo "")
+
+# Count fragile areas (lines with actual content)
+fragile_count=0
+if [ -n "$fragile_output" ]; then
+    fragile_count=$(echo "$fragile_output" | wc -l | tr -d ' ')
+fi
+
+# Check for CLAUDE.md files
+project_claude_md=""
+global_claude_md=""
+bug_notes=""
+
+if [ -f "${PROJECT_ROOT}/CLAUDE.md" ]; then
+    project_claude_md="found"
+    # Extract bug-related lines from project CLAUDE.md
+    bug_notes=$(grep -i "bug\|fragile\|regression\|fix(" "${PROJECT_ROOT}/CLAUDE.md" 2>/dev/null | head -5 || true)
+fi
+
+if [ -f "${HOME}/.claude/CLAUDE.md" ]; then
+    global_claude_md="found"
+fi
+
+# Check if bugs.md exists
+bugs_status="not found"
+active_count=0
+if [ -f "$BUGS_MD" ]; then
+    bugs_status="found"
+    active_count=$(grep -c "^\- \[BUG-" "$BUGS_MD" 2>/dev/null || true)
+    active_count=${active_count:-0}
+fi
+
+# Build summary message
+summary="Bug tracker: ${fragile_count} fragile area(s) detected"
+if [ "$active_count" -gt 0 ]; then
+    summary="${summary}, ${active_count} active bug(s)"
+fi
+if [ "$bugs_status" = "not found" ]; then
+    summary="${summary}. Run /bug-track scan to create bugs.md"
+fi
+
+# Escape for JSON
+escape_for_json() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+summary_escaped=$(escape_for_json "$summary")
+bug_notes_escaped=$(escape_for_json "$bug_notes")
+
+context="${summary_escaped}"
+if [ -n "$bug_notes" ]; then
+    context="${context}\\n\\nBug-related notes from CLAUDE.md:\\n${bug_notes_escaped}"
+fi
+
+cat <<EOF
+{
+  "additional_context": "${context}",
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "${context}"
+  }
+}
+EOF
+
+exit 0
